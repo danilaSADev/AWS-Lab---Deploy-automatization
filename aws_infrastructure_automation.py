@@ -14,16 +14,16 @@ pip3 install jupyter-notebook
 pip3 install pycairo'''
 
 
-def create_key_pair():
+def create_key_pair(keypair_name):
     ec2_client = boto3.client("ec2", region_name='us-east-1')
-    key_pair = ec2_client.create_key_pair(KeyName="lab4-key-pair")
+    key_pair = ec2_client.create_key_pair(KeyName=keypair_name)
     private_key = key_pair["KeyMaterial"]
-    with os.fdopen(os.open("lab4_ec2_key.pem", os.O_WRONLY | os.O_CREAT, 0o400), "w+") as handle:
+    with os.fdopen(os.open(f"{keypair_name}.pem", os.O_WRONLY | os.O_CREAT, 0o400), "w+") as handle:
         handle.write(private_key)
 
 
-def create_instance(instance_name):
-    ec2_client = boto3.client("ec2", region_name="us-east-1")
+def create_instance(user_data, region):
+    ec2_client = boto3.client("ec2", region_name=region)
     instances = ec2_client.run_instances(
         ImageId="ami-08c40ec9ead489470",
         MinCount=1,
@@ -34,7 +34,7 @@ def create_instance(instance_name):
         Monitoring={
             'Enabled': False
         },
-        UserData = USERDATA_SCRIPT,
+        UserData=user_data,
         InstanceType="t2.micro",
         KeyName="lab4-key-pair"
     )
@@ -50,6 +50,16 @@ def check_if_bucket_exist(bucket_name, region=None):
         return False
 
 
+def check_if_object_in_bucket_exist(bucket_name, object_key):
+    s3 = boto3.resource('s3')
+    try:
+        s3.Object(bucket_name, object_key).load()
+        return True
+    except ClientError as e:
+        print(e)
+        return False
+
+
 def create_s3_bucket(bucket_name, region):
 
     if check_if_bucket_exist(bucket_name, region):
@@ -57,19 +67,25 @@ def create_s3_bucket(bucket_name, region):
         return
 
     s3 = boto3.client('s3', region_name=region)
-    location = {'LocationConstraint':region}
+    # location = {'LocationConstraint': region}
 
     response = s3.create_bucket(
         Bucket=bucket_name,
-        CreateBucketConfiguration=location
+        # CreateBucketConfiguration=location
     )
     return response
 
 
-def send_file_to_bucket(bucket_name, file_name, object_name):
+def upload_file_to_bucket(bucket_name, file_name, object_key):
     s3 = boto3.client('s3')
-    with open(file_name, "rb") as f:
-        s3.upload_file(f, bucket_name, object_name)
+
+    if check_if_object_in_bucket_exist(bucket_name, object_key):
+        return
+
+    try:
+        s3.upload_file(file_name, bucket_name, object_key)
+    except ClientError as e:
+        print(e)
 
 
 def output_running_instances():
@@ -93,8 +109,8 @@ def output_running_instances():
             print(f"{instance_id}, {instance_type}, {public_ip}, {private_ip}")
 
 
-def get_public_ip(instance_id):
-    ec2_client = boto3.client("ec2", region_name="us-east-1")
+def get_public_ip(instance_id, region_name):
+    ec2_client = boto3.client("ec2", region_name=region_name)
 
     reservations = ec2_client.describe_instances(InstanceIds=[instance_id]).get("Reservations")
 
@@ -104,14 +120,45 @@ def get_public_ip(instance_id):
             return instance.get("PublicIpAddress")
 
 
-def stop_instance(instance_id):
-    ec2_client = boto3.client("ec2", region_name="us-east-1")
+def stop_instance(instance_id, region_name):
+    ec2_client = boto3.client("ec2", region_name=region_name)
     response = ec2_client.stop_instances(InstanceIds=[instance_id])
     return response
 
 
+def terminate_instance(instance_id):
+    try:
+        ec2 = boto3.resource('ec2')
+        instance = ec2.Instance(instance_id)
+        return instance.terminate()
+    except ClientError as e:
+        print(e)
+
+
+def delete_from_bucket(bucket_name, object_key):
+    s3 = boto3.resource('s3')
+    try:
+        if not check_if_object_in_bucket_exist(bucket_name, object_key):
+            return
+        s3.Object(bucket_name, object_key).delete()
+    except ClientError as e:
+        print(e)
+
+
+def read_from_bucket(bucket_name, object_key):
+    s3 = boto3.resource('s3')
+    obj = s3.Object(bucket_name, object_key)
+
+    return obj.get()['Body'].read()
+
+
+def write_to_bucket(bucket_name, object_key):
+    s3 = boto3.resource('s3')
+    s3.Object(bucket_name, object_key)
+
+
 def destroy_bucket(bucket_name, region):
-    if not check_if_bucket_exist(bucket_name,region):
+    if not check_if_bucket_exist(bucket_name, region):
         print("Bucket with this name does not exist!")
         return
     s3_client = boto3.client('s3', region_name=region)
